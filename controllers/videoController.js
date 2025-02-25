@@ -8,6 +8,7 @@ const { Readable } = require('stream');
 
 const transcodingProgress = {};
 let isProcessing = false;
+let isConnectionOpen; // for the goddamn transcode issue that sometimes wont send 100%
 
 const uploadVideo = async (req, res) => {
   console.log("Starting Upload");
@@ -62,17 +63,23 @@ const uploadVideo = async (req, res) => {
   const ffmpegCommand = ffmpeg(file.path)
     .on("start", () => console.log("FFmpeg process started"))
     .on("progress", (progress) => {
-      console.log("Actual percentage", progress.percent)
-      console.log("Rounded percentage", Math.round(progress.percent))
       transcodingProgress[filename] = Math.round(progress.percent);
       
     })
     .on("end", async () => {
       console.log("Transcoding finished");
       transcodingProgress[filename] = 100;
-      const eventSourceResponse = { progress: 100 };
-      console.log("Sending final progress update:", eventSourceResponse); // Debug log
-      res.write(`data: ${JSON.stringify(eventSourceResponse)}\n\n`);
+
+      // Check if the connection is still open
+      if (isConnectionOpen) {
+        const eventSourceResponse = { progress: 100 };
+        console.log("Sending final progress update:", eventSourceResponse); // Debug log
+        res.write(`data: ${JSON.stringify(eventSourceResponse)}\n\n`);
+        res.end(); // Close the connection
+        isConnectionOpen = false; // Mark connection as closed
+      } else {
+        console.warn("Connection already closed, cannot send final progress update"); // Debug log
+      }
       
       const masterPlaylist = resolutions
         .map((res) => `#EXT-X-STREAM-INF:BANDWIDTH=${parseInt(res.bitrate) * 1000},RESOLUTION=${res.scale}\n${res.folder}/index.m3u8`)
@@ -183,20 +190,34 @@ const getTranscodingProgress = (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
+  isConnectionOpen = true;
+
   const sendProgress = () => {
+    if (!isConnectionOpen) {
+      console.log("Connection closed, stopping progress updates"); // Debug log
+      clearInterval(interval);
+      return;
+    }
+
     const progress = transcodingProgress[filename] || 0;
+    console.log("Progress endpoint %:", progress); // Debug log
     res.write(`data: ${JSON.stringify({ progress })}\n\n`);
+
+    // Close the connection when progress reaches 100
     if (progress >= 100) {
-      console.log("Progress checker:", progress)
+      console.log("Transcoding completed, closing connection"); // Debug log
       clearInterval(interval);
       res.end();
+      isConnectionOpen = false; // Mark connection as closed
     }
   };
 
   const interval = setInterval(sendProgress, 1000);
 
   req.on("close", () => {
+    console.log("Client disconnected"); // Debug log
     clearInterval(interval);
+    isConnectionOpen = false; // Mark connection as closed
     res.end();
   });
 };
