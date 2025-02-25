@@ -11,6 +11,9 @@ let isProcessing = false;
 let isConnectionOpen; // for the goddamn transcode issue that sometimes wont send 100%
 
 const uploadVideo = async (req, res) => {
+  console.log(req)
+  const { addedBy } = req; // userId is attached by the authMiddleware
+  
   console.log("Starting Upload");
 
   if (isProcessing) {
@@ -35,7 +38,7 @@ const uploadVideo = async (req, res) => {
   // Mark video as 'processing' in MongoDB
   await Video.findOneAndUpdate(
     { title: filename },
-    { title: filename, status: "processing", originalExtension },
+    { title: filename, status: "processing", originalExtension, addedBy},
     { upsert: true, new: true }
   );
 
@@ -63,23 +66,13 @@ const uploadVideo = async (req, res) => {
   const ffmpegCommand = ffmpeg(file.path)
     .on("start", () => console.log("FFmpeg process started"))
     .on("progress", (progress) => {
-      transcodingProgress[filename] = Math.round(progress.percent);
+      // transcodingProgress[filename] = Math.round(progress.percent);
+      transcodingProgress[filename] = progress.percent;
       
     })
     .on("end", async () => {
       console.log("Transcoding finished");
       transcodingProgress[filename] = 100;
-
-      // Check if the connection is still open
-      if (isConnectionOpen) {
-        const eventSourceResponse = { progress: 100 };
-        console.log("Sending final progress update:", eventSourceResponse); // Debug log
-        res.write(`data: ${JSON.stringify(eventSourceResponse)}\n\n`);
-        res.end(); // Close the connection
-        isConnectionOpen = false; // Mark connection as closed
-      } else {
-        console.warn("Connection already closed, cannot send final progress update"); // Debug log
-      }
       
       const masterPlaylist = resolutions
         .map((res) => `#EXT-X-STREAM-INF:BANDWIDTH=${parseInt(res.bitrate) * 1000},RESOLUTION=${res.scale}\n${res.folder}/index.m3u8`)
@@ -137,11 +130,11 @@ const uploadVideo = async (req, res) => {
 
       fs.unlink(file.path, (err) => err && console.error("Error deleting original file:", err));
 
-      // Clear the transcoding progress
-      delete transcodingProgress[filename];
-
-      // Release the lock
-      isProcessing = false;
+      setTimeout(() => {
+        console.log(`Clearing progress for ${filename}`);
+        delete transcodingProgress[filename];
+        isProcessing = false;
+      }, 10000);
     })
     .on("error", async (err) => {
       console.error("FFmpeg error:", err);
@@ -183,41 +176,43 @@ const uploadVideo = async (req, res) => {
 };
 
 const getTranscodingProgress = (req, res) => {
-  console.log("Progress endpoint", req.params)
+  console.log("Progress endpoint", req.params);
   const filename = req.params.filename;
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  isConnectionOpen = true;
-
-  const sendProgress = () => {
-    if (!isConnectionOpen) {
-      console.log("Connection closed, stopping progress updates"); // Debug log
-      clearInterval(interval);
-      return;
-    }
-
-    const progress = transcodingProgress[filename] || 0;
-    console.log("Progress endpoint %:", progress); // Debug log
-    res.write(`data: ${JSON.stringify({ progress })}\n\n`);
-
-    // Close the connection when progress reaches 100
-    if (progress >= 100) {
-      console.log("Transcoding completed, closing connection"); // Debug log
+  // Send initial progress
+  sendUpdate();
+  
+  function sendUpdate() {
+    // Get current progress, defaulting to 0 if not found
+    const currentProgress = transcodingProgress[filename] !== undefined 
+      ? transcodingProgress[filename] 
+      : 0;
+    
+    // Round to one decimal place for display
+    const displayProgress = Math.round(currentProgress * 10) / 10;
+    
+    console.log(`Progress endpoint ${filename}: ${displayProgress}%`);
+    
+    // Send to client
+    res.write(`data: ${JSON.stringify({ progress: displayProgress })}\n\n`);
+    
+    // Close connection if we've reached 100%
+    if (displayProgress >= 100) {
+      console.log(`Sending final 100% progress for ${filename}`);
       clearInterval(interval);
       res.end();
-      isConnectionOpen = false; // Mark connection as closed
     }
-  };
+  }
 
-  const interval = setInterval(sendProgress, 1000);
+  const interval = setInterval(sendUpdate, 1000);
 
   req.on("close", () => {
-    console.log("Client disconnected"); // Debug log
+    console.log("Client disconnected");
     clearInterval(interval);
-    isConnectionOpen = false; // Mark connection as closed
     res.end();
   });
 };
