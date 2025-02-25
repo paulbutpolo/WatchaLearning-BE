@@ -8,6 +8,8 @@ const noteRoutes = require('./routes/noteRoutes');
 const trackRoutes = require('./routes/trackRoutes');
 const resourceRoutes = require('./routes/resourceRoutes');
 const subtitleRoutes = require('./routes/subtitleRoutes');
+const authRoutes = require('./routes/authRoutes');
+
 
 const app = express();
 const port = 3000;
@@ -20,6 +22,7 @@ connectDB();
 app.use(express.json());
 
 // Routes
+app.use('/api', authRoutes); // /
 app.use('/api', userRoutes); // /users
 app.use('/api', pathRoutes); // /paths
 app.use('/api', videoRoutes); // /videos 
