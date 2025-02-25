@@ -8,11 +8,10 @@ const { Readable } = require('stream');
 
 const transcodingProgress = {};
 let isProcessing = false;
-let isConnectionOpen; // for the goddamn transcode issue that sometimes wont send 100%
 
 const uploadVideo = async (req, res) => {
-  console.log(req)
-  const { addedBy } = req; // userId is attached by the authMiddleware
+  const { userId } = req;
+  const { description } = req.body;
   
   console.log("Starting Upload");
 
@@ -38,7 +37,7 @@ const uploadVideo = async (req, res) => {
   // Mark video as 'processing' in MongoDB
   await Video.findOneAndUpdate(
     { title: filename },
-    { title: filename, status: "processing", originalExtension, addedBy},
+    { title: filename, description, status: "processing", originalExtension, createdBy: userId},
     { upsert: true, new: true }
   );
 

@@ -3,11 +3,11 @@ const LearningPath = require('../models/LearningPath');
 // Create a new Path
 const createPath = async (req, res) => {
   console.log("Path controller createPath variable:", req.body);
-
-  const { title, description, videos, createdBy } = req.body;
-
+  const { userId } = req;
+  const { title, description, videos } = req.body;
+  console.log(userId)
   // Validate required fields
-  if (!title || !description || !videos || !createdBy) {
+  if (!title || !description || !videos ) {
     return res.status(400).json({ message: 'All fields are required' });
   }
 
@@ -29,7 +29,7 @@ const createPath = async (req, res) => {
       title,
       description,
       videos,
-      createdBy,
+      createdBy: userId,
     });
 
     // Save the document to the database

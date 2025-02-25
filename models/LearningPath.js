@@ -26,8 +26,8 @@ const learningPathSchema = new mongoose.Schema(
       },
     ],
     createdBy: {
-      type: String,
-      // ref: 'AdminUser', // Reference to the AdminUser model
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
       required: true,
     },
   },

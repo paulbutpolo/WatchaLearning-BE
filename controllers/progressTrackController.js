@@ -1,14 +1,12 @@
-// controllers/userController.js
 const ProgressTrack = require('../models/ProgressTrack');
 
-const STATIC_USER_ID = '64f1b1b1b1b1b1b1b1b1b1b1'; // Replace with a valid ObjectId
-
-// Create a new Path
+// Save progress for the current user
 const saveProgress = async (req, res) => {
   const { videoId, currentProgress } = req.body;
+  const { userId } = req; // Get userId from the request (added by authMiddleware)
 
   try {
-    let progress = await ProgressTrack.findOne({ userId: STATIC_USER_ID, videoId });
+    let progress = await ProgressTrack.findOne({ userId, videoId });
 
     if (progress) {
       // Update existing progress
@@ -17,7 +15,7 @@ const saveProgress = async (req, res) => {
     } else {
       // Create new progress entry
       progress = new ProgressTrack({
-        userId: STATIC_USER_ID,
+        userId,
         videoId,
         currentProgress,
         timestamp: Date.now(),
@@ -32,11 +30,13 @@ const saveProgress = async (req, res) => {
   }
 };
 
+// Get progress for the current user
 const getProgress = async (req, res) => {
   const { videoId } = req.query;
+  const { userId } = req; // Get userId from the request (added by authMiddleware)
 
   try {
-    const progress = await ProgressTrack.findOne({ userId: STATIC_USER_ID, videoId });
+    const progress = await ProgressTrack.findOne({ userId, videoId });
     if (progress) {
       res.status(200).json({ currentProgress: progress.currentProgress });
     } else {
@@ -50,6 +50,5 @@ const getProgress = async (req, res) => {
 
 module.exports = {
   saveProgress,
-  getProgress
+  getProgress,
 };
-
