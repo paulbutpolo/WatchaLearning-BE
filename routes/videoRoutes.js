@@ -5,6 +5,7 @@ const upload = require('../config/multer');
 const authMiddleware = require('../middleware/auth');
 
 router.get('/videos', videoController.getVideos);
+router.get('/video/:id', videoController.getVideoById);
 router.delete('/video/:id', videoController.deleteVideo);
 router.post('/videos/upload', authMiddleware, upload.single('video'), videoController.uploadVideo);
 router.get('/videos/progress/:filename', videoController.getTranscodingProgress);

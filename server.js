@@ -9,6 +9,7 @@ const trackRoutes = require('./routes/trackRoutes');
 const resourceRoutes = require('./routes/resourceRoutes');
 const subtitleRoutes = require('./routes/subtitleRoutes');
 const authRoutes = require('./routes/authRoutes');
+const subscriberRoutes = require('./routes/subscriberRoutes');
 
 
 const app = express();
@@ -30,6 +31,7 @@ app.use('/api', noteRoutes); // /notes
 app.use('/api', trackRoutes); // tracks
 app.use('/api', resourceRoutes); // resources
 app.use('/api', subtitleRoutes); // subtitles
+app.use('/api', subscriberRoutes); // subtitles
 
 // Start the server
 app.listen(port, () => {

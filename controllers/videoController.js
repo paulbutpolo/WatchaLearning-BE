@@ -585,6 +585,18 @@ const createVideo = async (req, res) => {
   }
 };
 
+const getVideoById = async (req, res) => {
+  try {
+    const video = await Video.findById(req.params.id);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+    res.json(video);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch video" });
+  }
+};
+
 // Things needed here
 const streamToString = (stream) => {
   return new Promise((resolve, reject) => {
@@ -653,4 +665,5 @@ module.exports = {
   uploadSubtitle,
   adjustSubtitle,
   downloadVideo,
+  getVideoById,
 };

@@ -6,7 +6,8 @@ const authMiddleware = require('../middleware/auth');
 
 // POST /api/users
 router.post('/paths', authMiddleware, learningPathController.createPath);
-
 router.get('/paths', learningPathController.getPaths);
+router.get('/paths/:id', learningPathController.getPathById);
+router.get('/paths/:id/next-video/:videoId', learningPathController.getNextVideo);
 
 module.exports = router;
