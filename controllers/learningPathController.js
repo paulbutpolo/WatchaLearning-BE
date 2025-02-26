@@ -88,9 +88,52 @@ const getNextVideo = async (req, res) => {
   }
 };
 
+const deletePath = async (req, res) => {
+  console.log("Deleting..", req.params)
+  const { id } = req.params;
+
+  try {
+    const deletedPath = await LearningPath.findByIdAndDelete(id);
+
+    if (!deletedPath) {
+      return res.status(404).json({ message: "Path not found" });
+    }
+
+    res.status(200).json({ message: "Path deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting path:", error);
+    res.status(500).json({ message: "Failed to delete path" });
+  }
+}
+
+const updatePath = async (req, res) => {
+  console.log("Updating..", req.params, req.body);
+  const { id } = req.params; // Use 'id' instead of 'pathId'
+  const { title, description, videos } = req.body; // Extract fields directly from req.body
+
+  try {
+    const updatedPath = await LearningPath.findByIdAndUpdate(
+      id, // Use 'id' here
+      { title, description, videos, updatedAt: Date.now() }, // Update fields directly
+      { new: true }
+    );
+
+    if (!updatedPath) {
+      return res.status(404).json({ message: "Path not found" });
+    }
+
+    res.status(200).json(updatedPath);
+  } catch (error) {
+    console.error("Error updating path:", error);
+    res.status(500).json({ message: "Failed to update path" });
+  }
+};
+
 module.exports = {
   createPath,
   getPaths,
   getPathById,
   getNextVideo,
+  deletePath,
+  updatePath,
 };
