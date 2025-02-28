@@ -12,6 +12,7 @@ const minioClient = new Minio.Client({
 });
 
 const bucketName = process.env.MINIO_BUCKET_NAME;
+console.log(bucketName)
 
 const initializeBucket = async () => {
   const exists = await minioClient.bucketExists(bucketName);

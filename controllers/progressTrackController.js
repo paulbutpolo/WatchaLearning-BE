@@ -52,23 +52,27 @@ const getProgress = async (req, res) => {
 };
 
 const getLastWatchedVideo = async (req, res) => {
-  const {userId} = req
+  const { userId } = req;
   try {
-    const tracker = await ProgressTrack.findOne({ userId })
-      .sort({ updatedAt: -1 })
+    const tracker = await ProgressTrack.findOne({ userId }).sort({ updatedAt: -1 });
 
     if (!tracker) {
-      return res.status(404).json({ message: 'No video found for this user.' });
+      return res.status(200).json({}); // Return an empty object instead of 404
     }
 
-    const video = await Video.findOne({ _id: tracker.videoId })
+    const video = await Video.findOne({ _id: tracker.videoId });
+
+    if (!video) {
+      return res.status(200).json({}); // Handle case where video does not exist
+    }
+
     const lastWatched = {
       courseId: tracker.courseId,
       videoId: tracker.videoId,
       videoTitle: video.title,
-    }
+    };
 
-    console.log(lastWatched)
+    console.log(lastWatched);
     res.status(200).json(lastWatched);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching last watched video', error });

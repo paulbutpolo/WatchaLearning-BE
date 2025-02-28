@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { createDefaultUser } = require('../controllers/userController');
 
 // Add Authentication here: Low Prio
 const connectDB = async () => {
@@ -8,6 +9,7 @@ const connectDB = async () => {
       useUnifiedTopology: true,
     });
     console.log(`MongoDB Connected: ${conn.connection.host}`);
+    createDefaultUser();
   } catch (error) {
     console.error(`Error: ${error.message}`);
     process.exit(1);
