@@ -5,6 +5,9 @@ const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
 const { Readable } = require('stream');
+const SRTParser2 = require('srt-parser-2').default;
+const parser = new SRTParser2();
+
 
 const transcodingProgress = {};
 let isProcessing = false;
@@ -236,7 +239,7 @@ const deleteVideo = async (req, res) => {
     }
 
     // Delete the video files from MinIO
-    const objectsList = await minioClient.listObjects(bucketName, video.name + "/");
+    const objectsList = await minioClient.listObjects(bucketName, video.title + "/");
     const deleteObjects = [];
     for await (const obj of objectsList) {
       deleteObjects.push(obj.name);
@@ -272,7 +275,7 @@ const uploadSubtitle = async (req, res) => {
     }
 
     // Create subtitle folder if it doesn't exist
-    const subtitleDir = `${video.name}/subtitles`;
+    const subtitleDir = `${video.title}/subtitles`;
     
     // Upload the subtitle file to MinIO
     const subtitleFileName = `${language}.vtt`;
@@ -282,14 +285,14 @@ const uploadSubtitle = async (req, res) => {
     
     // Create a subtitle playlist (required for HLS)
     const subtitlePlaylistContent = 
-    `#EXTM3U
-    #EXT-X-VERSION:3
-    #EXT-X-TARGETDURATION:0
-    #EXT-X-PLAYLIST-TYPE:VOD
-    #EXT-X-MEDIA-SEQUENCE:0
-    #EXTINF:0,
-    ${subtitleFileName}
-    #EXT-X-ENDLIST`;
+`#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:0
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:0,
+${subtitleFileName}
+#EXT-X-ENDLIST`;
 
     const playlistPath = `${subtitleDir}/${language}.m3u8`;
     const playlistStream = Readable.from([subtitlePlaylistContent]);
@@ -302,7 +305,7 @@ const uploadSubtitle = async (req, res) => {
     });
 
     // Fetch the master playlist from MinIO
-    const masterPlaylistPath = `${video.name}/master.m3u8`;
+    const masterPlaylistPath = `${video.title}/master.m3u8`;
     let masterPlaylist = "";
 
     try {
@@ -350,49 +353,80 @@ const uploadSubtitle = async (req, res) => {
 };
 
 const adjustSubtitle = async (req, res) => {
-  const videoId = req.params.id;
-  const { language, timeOffset } = req.body;
-  
-  if (!language || timeOffset === undefined) {
-    return res.status(400).json({ error: "Missing language or timeOffset" });
-  }
-
   try {
-    // Find the video in MongoDB
-    const video = await Video.findById(videoId);
-    if (!video) {
-      return res.status(404).json({ error: "Video not found" });
+    const { id } = req.params;
+    const { language, timeOffset } = req.body;
+
+    if (!language || typeof timeOffset !== 'number') {
+      return res.status(400).json({ error: 'Invalid request parameters' });
     }
 
-    // Check if subtitle exists
-    const subtitleInfo = video.subtitles.find(sub => sub.language === language);
-    if (!subtitleInfo) {
-      return res.status(404).json({ error: "Subtitle not found" });
-    }
+    const subtitlePath = `${id}/subtitles/${language}.vtt`;
+    const tempFilePath = path.join(__dirname, `${language}.vtt`);
 
-    // Get the VTT file from MinIO
-    const subtitlePath = `${video.name}/subtitles/${language}.vtt`;
-    let subtitleContent;
+    // 1. Download VTT from MinIO
+    const fileStream = fs.createWriteStream(tempFilePath);
+    await new Promise((resolve, reject) => {
+      minioClient.getObject(bucketName, subtitlePath, (err, dataStream) => {
+        if (err) return reject(err);
+        dataStream.pipe(fileStream);
+        dataStream.on('end', resolve);
+        dataStream.on('error', reject);
+      });
+    });
+
+    // Log the downloaded VTT content
+    let vttContent = fs.readFileSync(tempFilePath, 'utf8');
+    console.log('Downloaded VTT Content:', vttContent);
+
+    // 2. Convert VTT to SRT format
+    const srtContent = vttContent
+      .replace(/WEBVTT\s+/, '') // Remove WEBVTT header
+      .replace(/(\d{2}:\d{2})\.(\d{3})/g, '$1,$2'); // Replace periods with commas for milliseconds
+    console.log('Converted SRT Content:', srtContent);
     
-    try {
-      const dataStream = await minioClient.getObject(bucketName, subtitlePath);
-      subtitleContent = await streamToString(dataStream);
-    } catch (error) {
-      console.error("Error fetching subtitle from MinIO:", error);
-      return res.status(500).json({ error: "Failed to fetch subtitle file" });
+    // Parse SRT content
+    let subtitles = parser.fromSrt(srtContent);
+    console.log('Parsed Subtitles (Before Adjustment):', subtitles);
+
+    if (subtitles.length === 0) {
+      console.log('Using manual parser...');
+      subtitles = manualParseSRT(srtContent);
+      console.log('Manually Parsed Subtitles:', subtitles);
     }
 
-    // Adjust the subtitle timing
-    const adjustedContent = adjustSubtitleTiming(subtitleContent, parseFloat(timeOffset));
+    // 3. Adjust timestamps
+    subtitles = subtitles.map(sub => {
+      const startTimeMs = timeToMilliseconds(sub.startTime) + timeOffset;
+      const endTimeMs = timeToMilliseconds(sub.endTime) + timeOffset;
     
-    // Upload the adjusted VTT back to MinIO
-    const subtitleStream = Readable.from([adjustedContent]);
-    await minioClient.putObject(bucketName, subtitlePath, subtitleStream);
+      sub.startTime = millisecondsToTime(startTimeMs);
+      sub.endTime = millisecondsToTime(endTimeMs);
+      return sub;
+    });
+    console.log('Parsed Subtitles (After Adjustment):', subtitles);
 
-    res.json({ message: "Subtitle timing adjusted successfully" });
+    // 4. Convert back to VTT format
+    let updatedVTT = subtitles
+      .map(sub => `${sub.startTime.replace(/,/g, '.')} --> ${sub.endTime.replace(/,/g, '.')}\n${sub.text}`)
+      .join('\n\n');
+    updatedVTT = `WEBVTT\n\n${updatedVTT}`;
+    console.log('Updated VTT Content:', updatedVTT);
+
+    // 5. Save updated file
+    fs.writeFileSync(tempFilePath, updatedVTT, 'utf-8');
+
+    // 6. Upload back to MinIO
+    await minioClient.fPutObject(bucketName, subtitlePath, tempFilePath, { 'Content-Type': 'text/vtt' });
+
+    // Clean up temp file
+    fs.unlinkSync(tempFilePath);
+
+    return res.json({ message: 'Subtitle adjusted successfully' });
+
   } catch (error) {
-    console.error("Error adjusting subtitle timing:", error);
-    res.status(500).json({ error: "Failed to adjust subtitle timing" });
+    console.error('Error adjusting subtitle:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };
 
@@ -416,7 +450,7 @@ const downloadVideo = async (req, res) => {
     console.log(`Created temp directory: ${tempDir}`);
 
     // Construct the path to the resolution folder in MinIO
-    const folderPath = `${video.name}/${resolution}`;
+    const folderPath = `${video.title}/${resolution}`;
     
     // Create a file to list all TS files for ffmpeg concat
     const concatFilePath = path.join(tempDir, "concat.txt");
@@ -484,7 +518,7 @@ const downloadVideo = async (req, res) => {
     
     // Output file path
     const outputFilePath = path.join(tempDir, "output.mp4");
-    const sanitizedFilename = video.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const sanitizedFilename = video.title.replace(/[^a-zA-Z0-9_.-]/g, "_");
     const downloadFilename = `${sanitizedFilename}_${resolution}.mp4`;
     
     // Use fluent-ffmpeg to combine the files
@@ -552,39 +586,6 @@ const downloadVideo = async (req, res) => {
   }
 };
 
-const createVideo = async (req, res) => {
-  console.log("Video controller createVideo variable:", req.body); // Log the incoming request body for debugging
-
-  try {
-    // Destructure the required fields from the request body
-    const { title, description, qualityOptions, resources, duration } = req.body;
-    console.log(resources)
-
-    // Validate required fields
-    if (!title || !description || !qualityOptions || !resources || !duration) {
-      return res.status(400).json({ message: 'All fields are required' });
-    }
-
-    // Create a new video document
-    const newVideo = new Video({
-      title,
-      description,
-      qualityOptions,
-      resources,
-      duration,
-    });
-
-    // Save the video to the database
-    await newVideo.save();
-
-    // Respond with the created video
-    res.status(201).json(newVideo);
-  } catch (error) {
-    // Handle errors
-    res.status(400).json({ message: error.message });
-  }
-};
-
 const getVideoById = async (req, res) => {
   try {
     const video = await Video.findById(req.params.id);
@@ -607,55 +608,104 @@ const streamToString = (stream) => {
   });
 };
 
-function adjustSubtitleTiming(vttContent, offsetMs) {
-  // Skip if no offset
-  if (offsetMs === 0) return vttContent;
-  
-  // Parse and adjust times in the VTT file
-  const lines = vttContent.split('\n');
-  const adjusted = lines.map(line => {
-    // Look for timestamp lines (00:00:00.000 --> 00:00:00.000)
-    if (line.includes('-->')) {
-      const times = line.split('-->');
-      if (times.length === 2) {
-        const startTime = adjustTimeString(times[0].trim(), offsetMs);
-        const endTime = adjustTimeString(times[1].trim(), offsetMs);
-        return `${startTime} --> ${endTime}`;
-      }
+function manualParseSRT(srtContent) {
+  const subtitles = [];
+  const blocks = srtContent.split('\n\n'); // Split into subtitle blocks
+
+  blocks.forEach((block, index) => {
+    const lines = block.split('\n');
+    if (lines.length >= 2) {
+      const [timeRange, ...textLines] = lines;
+      const [startTime, endTime] = timeRange.split(' --> ');
+
+      subtitles.push({
+        id: index + 1,
+        startTime,
+        endTime,
+        text: textLines.join('\n'),
+      });
     }
-    return line;
   });
-  
-  return adjusted.join('\n');
+
+  return subtitles;
 }
 
-function adjustTimeString(timeStr, offsetMs) {
-  // Parse HH:MM:SS.mmm format
-  const [hours, minutes, secondsMillis] = timeStr.split(':');
-  const [seconds, millis] = secondsMillis.split('.');
-  
-  // Convert to milliseconds
-  let totalMs = parseInt(hours) * 3600000 + 
-                parseInt(minutes) * 60000 + 
-                parseInt(seconds) * 1000 + 
-                parseInt(millis || 0);
-  
-  // Apply offset
-  totalMs += offsetMs;
-  if (totalMs < 0) totalMs = 0;
-  
-  // Convert back to HH:MM:SS.mmm
-  const newHours = Math.floor(totalMs / 3600000);
-  const newMinutes = Math.floor((totalMs % 3600000) / 60000);
-  const newSeconds = Math.floor((totalMs % 60000) / 1000);
-  const newMillis = totalMs % 1000;
-  
-  // Format with leading zeros
-  return `${newHours.toString().padStart(2, '0')}:${
-    newMinutes.toString().padStart(2, '0')}:${
-    newSeconds.toString().padStart(2, '0')}.${
-    newMillis.toString().padStart(3, '0')}`;
+function timeToMilliseconds(time) {
+  const [hms, ms] = time.split(','); // Split into hours:minutes:seconds and milliseconds
+  const timeParts = hms.split(':'); // Split hours, minutes, seconds
+
+  let hours = 0, minutes = 0, seconds = 0;
+
+  if (timeParts. length === 3) {
+    // HH:MM:SS format
+    [hours, minutes, seconds] = timeParts;
+  } else if (timeParts.length === 2) {
+    // MM:SS format
+    [minutes, seconds] = timeParts;
+  } else {
+    throw new Error(`Invalid time format: ${time}`);
+  }
+
+  return (+hours * 3600 + +minutes * 60 + +seconds) * 1000 + +ms; // Convert to milliseconds
 }
+
+function millisecondsToTime(ms) {
+  const hours = Math.floor(ms / 3600000); // 1 hour = 3600000 ms
+  const minutes = Math.floor((ms % 3600000) / 60000); // 1 minute = 60000 ms
+  const seconds = Math.floor((ms % 60000) / 1000); // 1 second = 1000 ms
+  const milliseconds = ms % 1000; // Remainder is milliseconds
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(milliseconds).padStart(3, '0')}`;
+}
+
+// function adjustSubtitleTiming(vttContent, offsetMs) {
+//   // Skip if no offset
+//   if (offsetMs === 0) return vttContent;
+  
+//   // Parse and adjust times in the VTT file
+//   const lines = vttContent.split('\n');
+//   const adjusted = lines.map(line => {
+//     // Look for timestamp lines (00:00:00.000 --> 00:00:00.000)
+//     if (line.includes('-->')) {
+//       const times = line.split('-->');
+//       if (times.length === 2) {
+//         const startTime = adjustTimeString(times[0].trim(), offsetMs);
+//         const endTime = adjustTimeString(times[1].trim(), offsetMs);
+//         return `${startTime} --> ${endTime}`;
+//       }
+//     }
+//     return line;
+//   });
+  
+//   return adjusted.join('\n');
+// }
+
+// function adjustTimeString(timeStr, offsetMs) {
+//   // Parse HH:MM:SS.mmm format
+//   const [hours, minutes, secondsMillis] = timeStr.split(':');
+//   const [seconds, millis] = secondsMillis.split('.');
+  
+//   // Convert to milliseconds
+//   let totalMs = parseInt(hours) * 3600000 + 
+//                 parseInt(minutes) * 60000 + 
+//                 parseInt(seconds) * 1000 + 
+//                 parseInt(millis || 0);
+  
+//   // Apply offset
+//   totalMs += offsetMs;
+//   if (totalMs < 0) totalMs = 0;
+  
+//   // Convert back to HH:MM:SS.mmm
+//   const newHours = Math.floor(totalMs / 3600000);
+//   const newMinutes = Math.floor((totalMs % 3600000) / 60000);
+//   const newSeconds = Math.floor((totalMs % 60000) / 1000);
+//   const newMillis = totalMs % 1000;
+  
+//   // Format with leading zeros
+//   return `${newHours.toString().padStart(2, '0')}:${
+//     newMinutes.toString().padStart(2, '0')}:${
+//     newSeconds.toString().padStart(2, '0')}.${
+//     newMillis.toString().padStart(3, '0')}`;
+// }
 
 module.exports = {
   uploadVideo,

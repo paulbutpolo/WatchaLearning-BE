@@ -85,6 +85,27 @@ const updateProgress = async (req, res) => {
     res.status(400).json({ message: error.message });
   }
 }
+
+const listSubscription = async (req, res) => {
+  const { userId } = req
+  try {
+    const subscriptions = await Subscriber.find({ userId });
+    const courseIds = subscriptions.map(sub => sub.courseId);
+    const learningPaths = await LearningPath.find({ _id: { $in: courseIds } });
+    const coursesWithProgress = subscriptions.map(sub => {
+      const learningPath = learningPaths.find(lp => lp._id.equals(sub.courseId));
+      return {
+        id: sub.courseId,
+        title: learningPath ? learningPath.title : 'Unknown Title',
+        progress: sub.courseCompleted ? 'Completed' : 'In Progress',
+      };
+    });
+    return res.status(200).json(coursesWithProgress);
+  } catch (error) {
+    console.error("Error checking subscription:", error);
+    res.status(400).json({ message: error.message });
+  }
+}
   
 
 module.exports = {
@@ -92,4 +113,5 @@ module.exports = {
   unsubscribe,
   checkSubscription,
   updateProgress,
+  listSubscription,
 };

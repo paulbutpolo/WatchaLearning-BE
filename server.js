@@ -31,7 +31,7 @@ app.use('/api', noteRoutes); // /notes
 app.use('/api', trackRoutes); // tracks
 app.use('/api', resourceRoutes); // resources
 app.use('/api', subtitleRoutes); // subtitles
-app.use('/api', subscriberRoutes); // subtitles
+app.use('/api', subscriberRoutes); // subscriber
 
 // Start the server
 app.listen(port, () => {

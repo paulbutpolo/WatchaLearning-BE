@@ -12,7 +12,7 @@ const trackSchema = new mongoose.Schema(
       ref: 'Video', // Reference to the Video model
       required: true,
     },
-    videoId: {
+    courseId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'LearningPath', // Reference to the Video model
       required: true,

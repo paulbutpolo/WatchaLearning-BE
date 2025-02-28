@@ -11,20 +11,13 @@ const learningPathSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    videos: [
-      {
-        videoId: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'Video', // Reference to the Video model
-          required: true,
-        },
-        order: {
-          type: Number,
-          required: true,
-        },
+    videos: [{ 
+      videoId: { type: mongoose.Schema.Types.ObjectId, ref: 'Video', required: true },
+        order: { type: Number, required: true },
         _id: false,
       },
     ],
+    resources: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Resource' },{ _id: false }],
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

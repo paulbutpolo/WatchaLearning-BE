@@ -7,5 +7,6 @@ router.post('/subscriber/create', authMiddleware, subscriberController.createSub
 router.post('/subscriber/delete', authMiddleware, subscriberController.unsubscribe);
 router.get('/subscriber/check', authMiddleware, subscriberController.checkSubscription);
 router.put('/subscriber/update-progress', authMiddleware, subscriberController.updateProgress);
+router.get('/subscriber', authMiddleware, subscriberController.listSubscription);
 
 module.exports = router;

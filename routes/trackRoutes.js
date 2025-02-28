@@ -12,4 +12,5 @@ router.post('/tracks/save-progress', authMiddleware, progressTrackController.sav
 // Get progress
 router.get('/tracks/get-progress', authMiddleware, progressTrackController.getProgress);
 
+router.get('/tracks/last-watched', authMiddleware, progressTrackController.getLastWatchedVideo);
 module.exports = router;
