@@ -1,13 +1,31 @@
 // controllers/userController.js
-const { minioClient, bucketName } = require('../config/minio');
+const { minioClient, bucketName, initializeBucket } = require('../config/minio');
 const Video = require('../models/Video');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
 const { Readable } = require('stream');
-const SRTParser2 = require('srt-parser-2').default;
-const parser = new SRTParser2();
+require("dotenv").config();
+// const SRTParser2 = require('srt-parser-2').default;
+// const parser = new SRTParser2();
 
+// For some reason I cant use require and I need it to be import
+const parseSRT = async (srtContent) => {
+  try {
+    // Dynamically import the srt-parser-2 module
+    const SRTParser2 = (await import('srt-parser-2')).default;
+    const parser = new SRTParser2();
+    
+    // Parse the SRT content
+    const subtitles = parser.fromSrt(srtContent);
+    return subtitles;
+  } catch (err) {
+    console.error('Failed to load or use srt-parser-2:', err);
+    throw err; // Re-throw the error to handle it elsewhere
+  }
+};
+
+initializeBucket();
 
 const transcodingProgress = {};
 let isProcessing = false;
@@ -123,7 +141,7 @@ const uploadVideo = async (req, res) => {
       resolutions.forEach((res) => uploadFiles(path.join(hlsFolder, res.folder)));
       uploadFiles(path.join(hlsFolder, "master.m3u8"));
 
-      const videoUrl = `http://localhost:9000/${bucketName}/${filename}/master.m3u8`;
+      const videoUrl = `http://localhost:${process.env.MINIO_PORT}/${bucketName}/${filename}/master.m3u8`;
 
       await Video.findOneAndUpdate(
         { title: filename },
@@ -299,7 +317,7 @@ ${subtitleFileName}
     await minioClient.putObject(bucketName, playlistPath, playlistStream);
 
     // Update the video document to include the subtitle
-    const subtitleUrl = `http://localhost:9000/${bucketName}/${subtitleDir}/${language}.m3u8`;
+    const subtitleUrl = `http://localhost:${process.env.MINIO_PORT}/${bucketName}/${subtitleDir}/${language}.m3u8`;
     await Video.findByIdAndUpdate(videoId, {
       $push: { subtitles: { language, url: subtitleUrl } },
     });
@@ -386,7 +404,8 @@ const adjustSubtitle = async (req, res) => {
     console.log('Converted SRT Content:', srtContent);
     
     // Parse SRT content
-    let subtitles = parser.fromSrt(srtContent);
+    // let subtitles = parser.fromSrt(srtContent);
+    let subtitles = await parseSRT(srtContent);
     console.log('Parsed Subtitles (Before Adjustment):', subtitles);
 
     if (subtitles.length === 0) {
@@ -558,13 +577,13 @@ const downloadVideo = async (req, res) => {
             console.error(`Error sending file: ${err}`);
           }
           
-          // // Clean up after download completes or errors
-          // setTimeout(() => {
-          //   fs.rm(tempDir, { recursive: true, force: true }, (rmErr) => {
-          //     if (rmErr) console.error(`Error cleaning up temp directory: ${rmErr}`);
-          //     else console.log(`Cleaned up temp directory: ${tempDir}`);
-          //   });
-          // }, 1000); // 1-second delay before cleanup
+          // Clean up after download completes or errors
+          setTimeout(() => {
+            fs.rm(tempDir, { recursive: true, force: true }, (rmErr) => {
+              if (rmErr) console.error(`Error cleaning up temp directory: ${rmErr}`);
+              else console.log(`Cleaned up temp directory: ${tempDir}`);
+            });
+          }, 1000); // 1-second delay before cleanup
         });
       })
       .on('error', (err) => {
@@ -656,56 +675,6 @@ function millisecondsToTime(ms) {
   const milliseconds = ms % 1000; // Remainder is milliseconds
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(milliseconds).padStart(3, '0')}`;
 }
-
-// function adjustSubtitleTiming(vttContent, offsetMs) {
-//   // Skip if no offset
-//   if (offsetMs === 0) return vttContent;
-  
-//   // Parse and adjust times in the VTT file
-//   const lines = vttContent.split('\n');
-//   const adjusted = lines.map(line => {
-//     // Look for timestamp lines (00:00:00.000 --> 00:00:00.000)
-//     if (line.includes('-->')) {
-//       const times = line.split('-->');
-//       if (times.length === 2) {
-//         const startTime = adjustTimeString(times[0].trim(), offsetMs);
-//         const endTime = adjustTimeString(times[1].trim(), offsetMs);
-//         return `${startTime} --> ${endTime}`;
-//       }
-//     }
-//     return line;
-//   });
-  
-//   return adjusted.join('\n');
-// }
-
-// function adjustTimeString(timeStr, offsetMs) {
-//   // Parse HH:MM:SS.mmm format
-//   const [hours, minutes, secondsMillis] = timeStr.split(':');
-//   const [seconds, millis] = secondsMillis.split('.');
-  
-//   // Convert to milliseconds
-//   let totalMs = parseInt(hours) * 3600000 + 
-//                 parseInt(minutes) * 60000 + 
-//                 parseInt(seconds) * 1000 + 
-//                 parseInt(millis || 0);
-  
-//   // Apply offset
-//   totalMs += offsetMs;
-//   if (totalMs < 0) totalMs = 0;
-  
-//   // Convert back to HH:MM:SS.mmm
-//   const newHours = Math.floor(totalMs / 3600000);
-//   const newMinutes = Math.floor((totalMs % 3600000) / 60000);
-//   const newSeconds = Math.floor((totalMs % 60000) / 1000);
-//   const newMillis = totalMs % 1000;
-  
-//   // Format with leading zeros
-//   return `${newHours.toString().padStart(2, '0')}:${
-//     newMinutes.toString().padStart(2, '0')}:${
-//     newSeconds.toString().padStart(2, '0')}.${
-//     newMillis.toString().padStart(3, '0')}`;
-// }
 
 module.exports = {
   uploadVideo,

@@ -1,10 +1,12 @@
 const mongoose = require('mongoose');
 const { createDefaultUser } = require('../controllers/userController');
+require("dotenv").config();
 
-// Add Authentication here: Low Prio
+const mongoUri = process.env.MONGO_URI;
+
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect('mongodb://localhost:27017/VideoHub', {
+    const conn = await mongoose.connect(mongoUri, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
