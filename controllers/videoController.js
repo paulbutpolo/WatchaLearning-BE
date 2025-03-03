@@ -177,7 +177,7 @@ const uploadVideo = async (req, res) => {
       .videoCodec("libx264") // Use CPU for encoding
       .size(res.scale)
       .outputOptions([
-        `-preset veryfast`, // Faster encoding
+        `-preset ultrafast`, // Faster encoding
         `-g 48`,
         `-sc_threshold 0`,
         `-hls_time 4`,
@@ -185,7 +185,7 @@ const uploadVideo = async (req, res) => {
         `-b:v ${res.bitrate}`,
         `-maxrate ${res.maxrate}`,
         `-bufsize ${res.bufsize}`,
-        `-threads 12`, // Use all CPU threads
+        `-threads 2`, // Use all CPU threads
         `-bf 0`, // Disable B-frames
         `-movflags +faststart`, // Enable fast start
         `-hls_segment_filename ${path.join(hlsFolder, res.folder, "segment_%03d.ts")}`,
