@@ -257,7 +257,7 @@ const deleteVideo = async (req, res) => {
     }
 
     // Delete the video files from MinIO
-    const objectsList = await minioClient.listObjects(bucketName, video.title + "/");
+    const objectsList = await minioClient.listObjects(bucketName, `${video.title}/`, true);
     const deleteObjects = [];
     for await (const obj of objectsList) {
       deleteObjects.push(obj.name);

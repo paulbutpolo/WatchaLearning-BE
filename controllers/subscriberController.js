@@ -1,5 +1,6 @@
 const Subscriber = require('../models/Subscriber');
 const LearningPath = require('../models/LearningPath');
+const User = require('../models/User');
 
 const createSubscriber = async (req, res) => {
   console.log("Creating Subscriber");
@@ -106,7 +107,43 @@ const listSubscription = async (req, res) => {
     res.status(400).json({ message: error.message });
   }
 }
-  
+
+const getAllProgress = async (req, res) => {
+  try {
+    // Fetch all subscriptions
+    const subscriptions = await Subscriber.find({});
+
+    // Use Promise.all to fetch user details for all subscriptions
+    const allProgress = await Promise.all(
+      subscriptions.map(async (subscription) => {
+        const totalVideos = subscription.progress.length;
+        const completedVideos = subscription.progress.filter(video => video.completed).length;
+
+        // Calculate the progress percentage
+        const progressPercentage = totalVideos > 0 ? (completedVideos / totalVideos) * 100 : 0;
+
+        // Fetch user details
+        const user = await User.findById(subscription.userId);
+        const username = user ? user.username : 'Unknown'; // Fallback to 'Unknown' if user not found
+
+        return {
+          userId: subscription.userId,
+          username, // Add the username to the response
+          courseId: subscription.courseId,
+          totalVideos,
+          completedVideos,
+          progressPercentage,
+          courseCompleted: subscription.courseCompleted
+        };
+      })
+    );
+
+    return res.status(200).json(allProgress);
+  } catch (error) {
+    console.error("Error checking subscription:", error);
+    res.status(400).json({ message: error.message });
+  }
+};
 
 module.exports = {
   createSubscriber,
@@ -114,4 +151,5 @@ module.exports = {
   checkSubscription,
   updateProgress,
   listSubscription,
+  getAllProgress,
 };
