@@ -7,7 +7,7 @@ const subtitleSchema = new mongoose.Schema(
       ref: 'Video', // Reference to the Video model
       required: true,
     },
-    languge: {
+    language: {
       type:  String,
       required: true,
     },

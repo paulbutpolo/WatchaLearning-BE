@@ -3,15 +3,14 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const User = require('../models/User');
 
-const generateToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '1h' });
+const generateToken = (userId, username, role) => {
+  return jwt.sign({ userId, username, role }, process.env.JWT_SECRET, { expiresIn: '1h' });
 };
 
 const login = async (req, res) => {
   const { identifier, password } = req.body;
 
   try {
-    // Check if the identifier is an email or username
     const user = await User.findOne({
       $or: [{ email: identifier }, { username: identifier }],
     });
@@ -20,18 +19,13 @@ const login = async (req, res) => {
       return res.status(400).json({ message: 'Invalid email/username or password' });
     }
 
-    // Compare the password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid email/username or password' });
     }
 
-    // Generate a JWT token
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
-      expiresIn: '1h',
-    });
-
-    // Send the token to the frontend
+    const token = generateToken(user._id, user.username, user.role);
+    
     res.json({ token });
   } catch (error) {
     console.error('Login error:', error);
@@ -40,9 +34,7 @@ const login = async (req, res) => {
 };
 
 const signup = async (req, res) => {
-  console.log("Signing up..")
   const { username, email, password } = req.body;
-  console.log(username, email, password)
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = new User({ username, email, password: hashedPassword });

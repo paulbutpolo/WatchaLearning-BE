@@ -5,9 +5,9 @@ const noteController = require('../controllers/noteController');
 const authMiddleware = require('../middleware/auth');
 
 // POST /api/users
-router.post("/notes", authMiddleware, noteController.createNote);
-router.get("/notes/:videoId", authMiddleware, noteController.getNotes);
-router.put("/notes/:noteId", authMiddleware, noteController.updateNote);
-router.delete("/notes/:noteId", authMiddleware, noteController.deleteNote);
+router.post("/note", authMiddleware, noteController.createNote);
+router.get("/notes/:courseId/:videoId", authMiddleware, noteController.getNotes);
+router.put("/note/:id", authMiddleware, noteController.updateNote);
+router.delete("/note/:noteId", authMiddleware, noteController.deleteNote);
 
 module.exports = router;

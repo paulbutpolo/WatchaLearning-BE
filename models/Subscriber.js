@@ -20,7 +20,6 @@ const subscriberSchema = new mongoose.Schema(
         _id: false,
       }
     ],
-    courseCompleted: { type: Boolean, required: true },
   },
   {
     timestamps: true,

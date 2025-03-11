@@ -34,18 +34,25 @@ const saveProgress = async (req, res) => {
 
 // Get progress for the current user
 const getProgress = async (req, res) => {
-  const { courseId } = req.query;
-  const { videoId } = req.query;
-  const { userId } = req;
+  const { courseId, videoId } = req.query; // Extract courseId and videoId from query parameters
+  const { userId } = req; // Assuming userId is attached to the request (e.g., from authentication middleware)
+  // Validate required fields
+  if (!courseId || !videoId || !userId) {
+    return res.status(400).json({ message: 'Missing required fields: courseId, videoId, or userId' });
+  }
 
   try {
+    // Find progress in the database
     const progress = await ProgressTrack.findOne({ userId, videoId, courseId });
+
     if (progress) {
+      // Return the progress if found
       res.status(200).json({ currentProgress: progress.currentProgress });
     } else {
+      // Return a 404 if no progress is found
       res.status(404).json({ message: 'No progress found' });
     }
-  } catch (error) {``
+  } catch (error) {
     console.error('Error fetching progress:', error);
     res.status(500).json({ message: 'Failed to fetch progress' });
   }
@@ -72,7 +79,6 @@ const getLastWatchedVideo = async (req, res) => {
       videoTitle: video.title,
     };
 
-    console.log(lastWatched);
     res.status(200).json(lastWatched);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching last watched video', error });

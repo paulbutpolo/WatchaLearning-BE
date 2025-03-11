@@ -1,451 +1,513 @@
-// controllers/userController.js
+// VideoController.js
 const { minioClient, bucketName, initializeBucket } = require('../config/minio');
 const Video = require('../models/Video');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
-const { Readable } = require('stream');
-require("dotenv").config();
-// const SRTParser2 = require('srt-parser-2').default;
-// const parser = new SRTParser2();
+const { v4: uuidv4 } = require('uuid');
+const { Worker } = require('bullmq');
+const Queue = require('bullmq').Queue;
 
-// For some reason I cant use require and I need it to be import
-const parseSRT = async (srtContent) => {
+// Create a queue for video transcoding
+const videoQueue = new Queue('videoTranscode', {
+  connection: {
+    host: 'localhost',
+    port: 6379,
+  }
+});
+
+// Initialize the video controller
+const initializeController = async () => {
   try {
-    // Dynamically import the srt-parser-2 module
-    const SRTParser2 = (await import('srt-parser-2')).default;
-    const parser = new SRTParser2();
-    
-    // Parse the SRT content
-    const subtitles = parser.fromSrt(srtContent);
-    return subtitles;
-  } catch (err) {
-    console.error('Failed to load or use srt-parser-2:', err);
-    throw err; // Re-throw the error to handle it elsewhere
+    await initializeBucket();
+    console.log('Video controller initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize video controller:', error);
   }
 };
 
-initializeBucket();
-
-const transcodingProgress = {};
-let isProcessing = false;
-
+// Upload a video file to MinIO
 const uploadVideo = async (req, res) => {
-  const { userId } = req;
-  const { description } = req.body;
-  
-  console.log("Starting Upload");
+  const { userId } = req
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
 
-  if (isProcessing) {
-    return res.status(409).json({ error: "An upload/transcoding is already in progress" });
-  }
+    const { originalname, path: filePath, mimetype, size } = req.file;
+    const fileExtension = path.extname(originalname);
+    const fileId = uuidv4();
+    const fileName = `${fileId}${fileExtension}`;
 
-  isProcessing = true;
+    // Upload file to MinIO
+    await minioClient.fPutObject(
+      bucketName,
+      `uploads/${fileName}`,
+      filePath,
+      { 'Content-Type': mimetype }
+    );
 
-  const file = req.file;
-  if (!file) {
-    isProcessing = false;
-    return res.status(400).json({ error: "No file uploaded" });
-  }
-
-  const filename = file.originalname; // Use original filename for progress tracking
-  const parsedFilename = path.parse(file.filename).name;
-  const originalExtension = path.extname(file.originalname);
-  const hlsFolder = `uploads/${parsedFilename}_hls`;
-
-  if (!fs.existsSync(hlsFolder)) fs.mkdirSync(hlsFolder);
-
-  // Mark video as 'processing' in MongoDB
-  await Video.findOneAndUpdate(
-    { title: filename },
-    { title: filename, description, status: "processing", originalExtension, createdBy: userId},
-    { upsert: true, new: true }
-  );
-
-  const resolutions = [
-    { folder: "1080p", scale: "1920x1080", bitrate: "1500k", maxrate: "2000k", bufsize: "3000k" },
-    { folder: "720p", scale: "1280x720", bitrate: "800k", maxrate: "1200k", bufsize: "1600k" },
-    { folder: "480p", scale: "854x480", bitrate: "400k", maxrate: "600k", bufsize: "800k" },
-  ];
-
-  resolutions.forEach((res) => {
-    const folderPath = path.join(hlsFolder, res.folder);
-    if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath);
-  });
-
-  // Initialize transcoding progress
-  transcodingProgress[filename] = 0;
-
-  // Send initial response
-  res.json({ 
-    message: "Video upload started", 
-    parsedFilename: parsedFilename,
-    originalFilename: filename 
-  });
-
-  const ffmpegCommand = ffmpeg(file.path)
-    .on("start", () => console.log("FFmpeg process started"))
-    .on("progress", (progress) => {
-      // transcodingProgress[filename] = Math.round(progress.percent);
-      transcodingProgress[filename] = progress.percent;
-      
-    })
-    .on("end", async () => {
-      console.log("Transcoding finished");
-      transcodingProgress[filename] = 100;
-      
-      const masterPlaylist = resolutions
-        .map((res) => `#EXT-X-STREAM-INF:BANDWIDTH=${parseInt(res.bitrate) * 1000},RESOLUTION=${res.scale}\n${res.folder}/index.m3u8`)
-        .join("\n");
-      fs.writeFileSync(path.join(hlsFolder, "master.m3u8"), `#EXTM3U\n#EXT-X-VERSION:3\n${masterPlaylist}`);
-
-      const uploadFiles = async (pathToFileOrFolder) => {
-        const MAX_CONCURRENT_UPLOADS = 10; // Limit the number of concurrent uploads
-        let activeUploads = 0;
-        const queue = [];
-      
-        const processQueue = async () => {
-          while (queue.length > 0 && activeUploads < MAX_CONCURRENT_UPLOADS) {
-            const { filePath, objectName } = queue.shift();
-            activeUploads++;
-      
-            const fileStream = fs.createReadStream(filePath);
-            minioClient.putObject(bucketName, objectName, fileStream, async (err) => {
-              if (err) {
-                console.error("Upload error:", err);
-              } else {
-                fs.unlink(filePath, (err) => err && console.error("Error deleting file:", err));
-              }
-      
-              activeUploads--;
-              await processQueue(); // Process the next file in the queue
-            });
-          }
-        };
-      
-        if (fs.lstatSync(pathToFileOrFolder).isDirectory()) {
-          const files = fs.readdirSync(pathToFileOrFolder);
-          for (const file of files) {
-            const filePath = path.join(pathToFileOrFolder, file);
-            const objectName = `${filename}/${path.basename(pathToFileOrFolder)}/${file}`;
-            queue.push({ filePath, objectName });
-          }
-        } else {
-          const objectName = `${filename}/${path.basename(pathToFileOrFolder)}`;
-          queue.push({ filePath: pathToFileOrFolder, objectName });
-        }
-      
-        await processQueue(); // Start processing the queue
-      };
-
-      resolutions.forEach((res) => uploadFiles(path.join(hlsFolder, res.folder)));
-      uploadFiles(path.join(hlsFolder, "master.m3u8"));
-
-      const videoUrl = `http://localhost:${process.env.MINIO_PORT}/${bucketName}/${filename}/master.m3u8`;
-
-      await Video.findOneAndUpdate(
-        { title: filename },
-        { url: videoUrl, status: "completed" }
-      );
-
-      fs.unlink(file.path, (err) => err && console.error("Error deleting original file:", err));
-
-      setTimeout(() => {
-        console.log(`Clearing progress for ${filename}`);
-        delete transcodingProgress[filename];
-        isProcessing = false;
-      }, 10000);
-    })
-    .on("error", async (err) => {
-      console.error("FFmpeg error:", err);
-
-      await Video.findOneAndUpdate(
-        { title: filename },
-        { status: "failed" }
-      );
-
-      // Clear the transcoding progress
-      delete transcodingProgress[filename];
-
-      // Release the lock
-      isProcessing = false;
+    // Create video record in MongoDB
+    const video = new Video({
+      fileId,
+      originalName: originalname,
+      fileName,
+      mimeType: mimetype,
+      size,
+      uploadDate: new Date(),
+      status: 'uploaded',
+      transcodingProgress: 0,
+      formats: [],
+      createdBy: userId
     });
 
-  resolutions.forEach((res) => {
-    ffmpegCommand
-      .output(path.join(hlsFolder, res.folder, "index.m3u8"))
-      .videoCodec("libx264") // Use CPU for encoding
-      .size(res.scale)
-      .outputOptions([
-        `-preset ultrafast`, // Faster encoding
-        `-g 48`,
-        `-sc_threshold 0`,
-        `-hls_time 4`,
-        `-hls_playlist_type vod`,
-        `-b:v ${res.bitrate}`,
-        `-maxrate ${res.maxrate}`,
-        `-bufsize ${res.bufsize}`,
-        `-threads 2`, // Use all CPU threads
-        `-bf 0`, // Disable B-frames
-        `-movflags +faststart`, // Enable fast start
-        `-hls_segment_filename ${path.join(hlsFolder, res.folder, "segment_%03d.ts")}`,
-      ]);
-  });
-  
-  ffmpegCommand.run();
-};
+    await video.save();
 
-const getTranscodingProgress = (req, res) => {
-  console.log("Progress endpoint", req.params);
-  const filename = req.params.filename;
+    // Clean up the temporary file
+    fs.unlinkSync(filePath);
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  // Send initial progress
-  sendUpdate();
-  
-  function sendUpdate() {
-    // Get current progress, defaulting to 0 if not found
-    const currentProgress = transcodingProgress[filename] !== undefined 
-      ? transcodingProgress[filename] 
-      : 0;
-    
-    // Round to one decimal place for display
-    const displayProgress = Math.round(currentProgress * 10) / 10;
-    
-    console.log(`Progress endpoint ${filename}: ${displayProgress}%`);
-    
-    // Send to client
-    res.write(`data: ${JSON.stringify({ progress: displayProgress })}\n\n`);
-    
-    // Close connection if we've reached 100%
-    if (displayProgress >= 100) {
-      console.log(`Sending final 100% progress for ${filename}`);
-      clearInterval(interval);
-      res.end();
-    }
-  }
-
-  const interval = setInterval(sendUpdate, 1000);
-
-  req.on("close", () => {
-    console.log("Client disconnected");
-    clearInterval(interval);
-    res.end();
-  });
-};
-
-const getVideos = async (req, res) => {
-  try {
-    const videos = await Video.find();
-    res.json(videos);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-const deleteVideo = async (req, res) => {
-  const videoId = req.params.id;
-
-  try {
-    // Find the video in MongoDB
-    const video = await Video.findById(videoId);
-    if (!video) {
-      return res.status(404).json({ error: "Video not found" });
-    }
-
-    // Delete the video files from MinIO
-    const objectsList = await minioClient.listObjects(bucketName, `${video.title}/`, true);
-    const deleteObjects = [];
-    for await (const obj of objectsList) {
-      deleteObjects.push(obj.name);
-    }
-    if (deleteObjects.length > 0) {
-      await minioClient.removeObjects(bucketName, deleteObjects);
-    }
-
-    // Delete the video metadata from MongoDB
-    await Video.findByIdAndDelete(videoId);
-
-    res.json({ message: "Video deleted successfully" });
-  } catch (err) {
-    console.error("Error deleting video:", err);
-    res.status(500).json({ error: "Failed to delete video" });
-  }
-};
-
-const uploadSubtitle = async (req, res) => {
-  const videoId = req.params.id;
-  const subtitleFile = req.file;
-  const language = req.body.language || "en"; // Get language from form or default to English
-
-  if (!subtitleFile) {
-    return res.status(400).json({ error: "No subtitle file uploaded" });
-  }
-
-  try {
-    // Find the video in MongoDB
-    const video = await Video.findById(videoId);
-    if (!video) {
-      return res.status(404).json({ error: "Video not found" });
-    }
-
-    // Create subtitle folder if it doesn't exist
-    const subtitleDir = `${video.title}/subtitles`;
-    
-    // Upload the subtitle file to MinIO
-    const subtitleFileName = `${language}.vtt`;
-    const subtitlePath = `${subtitleDir}/${subtitleFileName}`;
-    const fileStream = fs.createReadStream(subtitleFile.path);
-    await minioClient.putObject(bucketName, subtitlePath, fileStream);
-    
-    // Create a subtitle playlist (required for HLS)
-    const subtitlePlaylistContent = 
-`#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:0
-#EXT-X-PLAYLIST-TYPE:VOD
-#EXT-X-MEDIA-SEQUENCE:0
-#EXTINF:0,
-${subtitleFileName}
-#EXT-X-ENDLIST`;
-
-    const playlistPath = `${subtitleDir}/${language}.m3u8`;
-    const playlistStream = Readable.from([subtitlePlaylistContent]);
-    await minioClient.putObject(bucketName, playlistPath, playlistStream);
-
-    // Update the video document to include the subtitle
-    const subtitleUrl = `http://localhost:${process.env.MINIO_PORT}/${bucketName}/${subtitleDir}/${language}.m3u8`;
-    await Video.findByIdAndUpdate(videoId, {
-      $push: { subtitles: { language, url: subtitleUrl } },
-    });
-
-    // Fetch the master playlist from MinIO
-    const masterPlaylistPath = `${video.title}/master.m3u8`;
-    let masterPlaylist = "";
-
-    try {
-      const dataStream = await minioClient.getObject(bucketName, masterPlaylistPath);
-      masterPlaylist = await streamToString(dataStream);
-    } catch (error) {
-      console.error("Error fetching master playlist from MinIO:", error);
-      return res.status(500).json({ error: "Failed to fetch master playlist" });
-    }
-
-    // Check if subtitle group exists in the master playlist
-    if (!masterPlaylist.includes('GROUP-ID="subs"')) {
-      // Add subtitle group to master playlist
-      const subtitleEntry = `\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="${language.toUpperCase()}",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="${language}",URI="subtitles/${language}.m3u8"`;
-      
-      // Add subtitle group association to each variant stream
-      const lines = masterPlaylist.split('\n');
-      let updatedLines = [];
-      
-      for (const line of lines) {
-        if (line.startsWith('#EXT-X-STREAM-INF:')) {
-          updatedLines.push(`${line},SUBTITLES="subs"`);
-        } else {
-          updatedLines.push(line);
-        }
+    // Add transcoding job to queue
+    await videoQueue.add('transcode', {
+      videoId: video._id,
+      fileName
+    }, {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 5000
       }
-      
-      masterPlaylist = updatedLines.join('\n') + subtitleEntry;
-      
-      // Upload the updated master playlist back to MinIO
-      const updatedPlaylistStream = Readable.from([masterPlaylist]);
-      await minioClient.putObject(bucketName, masterPlaylistPath, updatedPlaylistStream);
-    }
-
-    // Clean up local file
-    fs.unlink(subtitleFile.path, (err) => {
-      if (err) console.error("Error deleting temp subtitle file:", err);
     });
 
-    res.json({ message: "Subtitle uploaded successfully" });
+    return res.status(200).json({
+      message: 'Video uploaded successfully',
+      video: {
+        id: video._id,
+        originalName: video.originalName,
+        status: video.status,
+        uploadDate: video.uploadDate
+      }
+    });
   } catch (error) {
-    console.error("Error uploading subtitle:", error);
-    res.status(500).json({ error: "Failed to upload subtitle" });
+    console.error('Error uploading video:', error);
+    return res.status(500).json({ message: 'Error uploading video', error: error.message });
   }
 };
 
-const adjustSubtitle = async (req, res) => {
+// Get video transcoding status
+const getVideoStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { language, timeOffset } = req.body;
-
-    if (!language || typeof timeOffset !== 'number') {
-      return res.status(400).json({ error: 'Invalid request parameters' });
+    const video = await Video.findById(id);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
     }
 
-    const subtitlePath = `${id}/subtitles/${language}.vtt`;
-    const tempFilePath = path.join(__dirname, `${language}.vtt`);
+    return res.status(200).json({
+      id: video._id,
+      originalName: video.originalName,
+      status: video.status,
+      transcodingProgress: video.transcodingProgress,
+      formats: video.formats,
+      uploadDate: video.uploadDate,
+      completedDate: video.completedDate
+    });
+  } catch (error) {
+    console.error('Error getting video status:', error);
+    return res.status(500).json({ message: 'Error getting video status', error: error.message });
+  }
+};
 
-    // 1. Download VTT from MinIO
-    const fileStream = fs.createWriteStream(tempFilePath);
-    await new Promise((resolve, reject) => {
-      minioClient.getObject(bucketName, subtitlePath, (err, dataStream) => {
-        if (err) return reject(err);
-        dataStream.pipe(fileStream);
-        dataStream.on('end', resolve);
-        dataStream.on('error', reject);
+// Get all videos
+const getAllVideos = async (req, res) => {
+  const limit = parseInt(req.query.limit);
+  const lastCreatedAt = req.query.lastCreatedAt;
+  let query = {};
+
+  if (lastCreatedAt) {
+    query = { createdAt: { $lt: new Date(lastCreatedAt) } };
+  }
+
+  try {
+    const videos = await Video.find(query)
+        .sort({ uploadDate: -1 })
+        .limit(limit);
+
+    const videoData = videos.map(video => ({
+      id: video._id,
+      originalName: video.originalName,
+      status: video.status,
+      transcodingProgress: video.transcodingProgress,
+      size: video.size,
+      type: video.mimeType,
+      uploadDate: video.uploadDate,
+      completedDate: video.completedDate
+    }));
+
+    return res.status(200).json(videoData);
+  } catch (error) {
+    console.error('Error fetching videos:', error);
+    return res.status(500).json({ message: 'Error fetching videos', error: error.message });
+  }
+};
+
+// Delete a video
+const deleteVideo = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const video = await Video.findById(id);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+
+    // Delete from MinIO
+    if (video.fileName) {
+      await minioClient.removeObject(bucketName, `uploads/${video.fileName}`);
+    }
+
+    // Delete HLS segments and manifests
+    if (video.hlsPath) {
+      try {
+        const objects = await listObjects(`hls/${video.fileId}`);
+        for (const obj of objects) {
+          await minioClient.removeObject(bucketName, obj.name);
+        }
+      } catch (err) {
+        console.error('Error deleting HLS files:', err);
+      }
+    }
+
+    // Delete from MongoDB
+    await Video.findByIdAndDelete(id);
+
+    return res.status(200).json({ message: 'Video deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting video:', error);
+    return res.status(500).json({ message: 'Error deleting video', error: error.message });
+  }
+};
+
+// Helper function to list objects in MinIO with a prefix
+const listObjects = async (prefix) => {
+  return new Promise((resolve, reject) => {
+    const objects = [];
+    const stream = minioClient.listObjects(bucketName, prefix, true);
+    
+    stream.on('data', (obj) => {
+      objects.push(obj);
+    });
+    
+    stream.on('error', (err) => {
+      reject(err);
+    });
+    
+    stream.on('end', () => {
+      resolve(objects);
+    });
+  });
+};
+
+// Start the worker to process the queue
+const startWorker = () => {
+  const worker = new Worker('videoTranscode', async job => {
+    const { videoId, fileName } = job.data;
+    
+    try {
+      // Update status to transcoding
+      await Video.findByIdAndUpdate(videoId, { 
+        status: 'transcoding',
+        transcodingProgress: 0
+      });
+
+      // Get the video from MinIO
+      const tempDir = path.join(__dirname, '../temp');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      const inputPath = path.join(tempDir, fileName);
+      await minioClient.fGetObject(bucketName, `uploads/${fileName}`, inputPath);
+
+      // Create HLS output directory
+      const fileId = path.parse(fileName).name;
+      const hlsOutputDir = path.join(tempDir, fileId); // Adjusted directory name
+      if (!fs.existsSync(hlsOutputDir)) {
+        fs.mkdirSync(hlsOutputDir, { recursive: true });
+      }
+
+      // Define resolutions for adaptive streaming
+      const aspectRatio = 16 / 9;
+      const resolutions = [
+        { name: '1080p', width: Math.round(1080 * aspectRatio), height: 1080, bitrate: '5000k' },
+        { name: '720p', width: Math.round(720 * aspectRatio), height: 720, bitrate: '2800k' },
+        { name: '480p', width: Math.round(480 * aspectRatio), height: 480, bitrate: '1400k' }
+      ];
+
+      // Extract video duration to calculate overall progress
+      const videoInfo = await getVideoInfo(inputPath);
+      const videoDuration = videoInfo.duration;
+
+      // Create master playlist
+      let masterPlaylist = '#EXTM3U\n#EXT-X-VERSION:3\n';
+
+      // Generate variants
+      for (const resolution of resolutions) {
+        masterPlaylist += `#EXT-X-STREAM-INF:BANDWIDTH=${parseInt(resolution.bitrate) * 1000},RESOLUTION=${resolution.width}x${resolution.height},NAME="${resolution.name}"\n`;
+        masterPlaylist += `${resolution.name}/playlist.m3u8\n`;
+      }
+      
+      // Write master playlist to file
+      fs.writeFileSync(path.join(hlsOutputDir, 'master.m3u8'), masterPlaylist);
+
+      // Track progress
+      let overallProgress = 0;
+      const progressWeight = 100 / resolutions.length;
+
+      // Process each resolution
+      for (const [index, resolution] of resolutions.entries()) {
+        // Create directory for this resolution
+        const resolutionDir = path.join(hlsOutputDir, resolution.name);
+        if (!fs.existsSync(resolutionDir)) {
+          fs.mkdirSync(resolutionDir, { recursive: true });
+        }
+
+        // Transcode to HLS
+        await new Promise((resolve, reject) => {
+          ffmpeg(inputPath)
+            .outputOptions([
+              '-c:v libx264',
+              `-b:v ${resolution.bitrate}`,
+              `-maxrate ${resolution.bitrate}`,
+              `-bufsize ${parseInt(resolution.bitrate) * 2}k`,
+              `-vf scale=-2:${resolution.height}`,
+              '-c:a aac',
+              '-b:a 128k',
+              '-hls_time 6',
+              '-hls_list_size 0',
+              '-hls_segment_filename',
+              path.join(resolutionDir, 'segment_%03d.ts'),
+              '-threads 12', // Use all 12 CPU threads
+              '-preset faster', // Use a faster preset for better performance
+              '-f hls'
+            ])
+            .on('progress', progress => {
+              // Calculate progress for this resolution
+              const percent = Math.min(Math.round(progress.percent || 0), 100);
+              const currentResolutionProgress = (index * progressWeight) + ((percent / 100) * progressWeight);
+              
+              // Update progress in MongoDB
+              Video.findByIdAndUpdate(videoId, { 
+                transcodingProgress: Math.round(currentResolutionProgress)
+              }).catch(err => console.error('Error updating progress:', err));
+            })
+            .on('end', () => {
+              overallProgress += progressWeight;
+              resolve();
+            })
+            .on('error', (err) => {
+              console.error(`Error transcoding ${resolution.name}:`, err);
+              reject(err);
+            })
+            .save(path.join(resolutionDir, 'playlist.m3u8'));
+        });
+      }
+
+      // Upload HLS segments and playlists to MinIO
+      const uploadTasks = [];
+      
+      // Function to recursively upload all files in a directory
+      const uploadDirectory = async (dir, baseDir) => {
+        const files = fs.readdirSync(dir);
+        
+        for (const file of files) {
+          const filePath = path.join(dir, file);
+          const stat = fs.statSync(filePath);
+          
+          if (stat.isDirectory()) {
+            await uploadDirectory(filePath, baseDir);
+          } else {
+            // Determine the relative path for MinIO
+            const relativePath = path.relative(baseDir, filePath);
+            // Construct the MinIO path without the extra directory level
+            const minioPath = `hls/${fileId}/${relativePath.replace(/\\/g, '/')}`;
+            // Set content type based on file extension
+            let contentType = 'application/octet-stream';
+            if (file.endsWith('.m3u8')) {
+              contentType = 'application/vnd.apple.mpegurl';
+            } else if (file.endsWith('.ts')) {
+              contentType = 'video/mp2t';
+            }
+            
+            // Upload file to MinIO
+            await minioClient.fPutObject(
+              bucketName,
+              minioPath,
+              filePath,
+              { 'Content-Type': contentType }
+            );
+          }
+        }
+      };
+
+      // Upload all HLS files
+      await uploadDirectory(hlsOutputDir, hlsOutputDir);
+
+      // Update MongoDB with completed HLS path
+      await Video.findByIdAndUpdate(videoId, {
+        status: 'completed',
+        transcodingProgress: 100,
+        hlsPath: `hls/${fileId}/master.m3u8`,
+        formats: resolutions.map(resolution => ({
+          name: resolution.name,
+          resolution: `${resolution.height}p`,
+          bitrate: resolution.bitrate,
+          path: `hls/${fileId}/${resolution.name}/playlist.m3u8`
+        })),
+        completedDate: new Date()
+      });
+
+      // Clean up
+      fs.unlinkSync(inputPath);
+      fs.rmSync(hlsOutputDir, { recursive: true, force: true });
+      
+      console.log(`HLS transcoding completed for video ${videoId}`);
+    } catch (error) {
+      console.error('Transcoding error:', error);
+      
+      // Update video status to failed
+      await Video.findByIdAndUpdate(videoId, { 
+        status: 'failed',
+        error: error.message
+      });
+      
+      throw error;
+    }
+  }, { 
+    connection: {
+      host: 'localhost',
+      port: 6379
+    },
+    concurrency: 2 // Process 2 videos at a time
+  });
+
+  worker.on('completed', job => {
+    console.log(`Job ${job.id} completed successfully`);
+  });
+
+  worker.on('failed', (job, err) => {
+    console.error(`Job ${job.id} failed with error ${err.message}`);
+  });
+
+  return worker;
+};
+
+// Helper function to get video information
+const getVideoInfo = (filePath) => {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) {
+        return reject(err);
+      }
+      
+      const videoStream = metadata.streams.find(stream => stream.codec_type === 'video');
+      const duration = parseFloat(metadata.format.duration || 0);
+      
+      resolve({
+        duration,
+        width: videoStream ? videoStream.width : 0,
+        height: videoStream ? videoStream.height : 0,
+        bitrate: metadata.format.bit_rate
       });
     });
+  });
+};
 
-    // Log the downloaded VTT content
-    let vttContent = fs.readFileSync(tempFilePath, 'utf8');
-    console.log('Downloaded VTT Content:', vttContent);
-
-    // 2. Convert VTT to SRT format
-    const srtContent = vttContent
-      .replace(/WEBVTT\s+/, '') // Remove WEBVTT header
-      .replace(/(\d{2}:\d{2})\.(\d{3})/g, '$1,$2'); // Replace periods with commas for milliseconds
-    console.log('Converted SRT Content:', srtContent);
+// Stream HLS video
+// http://localhost:5000/api/videos1/67cb0b0a4005aeb1299fa25f/hls
+// http://localhost:9000/videos/hls/45fdc58a-5166-46eb-bf3f-1be0877ea77b/hls_45fdc58a-5166-46eb-bf3f-1be0877ea77b/master.m3u8
+const streamHls = async (req, res) => {
+  try {
+    const { id, file } = req.params;
+    const video = await Video.findById(id);
     
-    // Parse SRT content
-    // let subtitles = parser.fromSrt(srtContent);
-    let subtitles = await parseSRT(srtContent);
-    console.log('Parsed Subtitles (Before Adjustment):', subtitles);
-
-    if (subtitles.length === 0) {
-      console.log('Using manual parser...');
-      subtitles = manualParseSRT(srtContent);
-      console.log('Manually Parsed Subtitles:', subtitles);
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
     }
 
-    // 3. Adjust timestamps
-    subtitles = subtitles.map(sub => {
-      const startTimeMs = timeToMilliseconds(sub.startTime) + timeOffset;
-      const endTimeMs = timeToMilliseconds(sub.endTime) + timeOffset;
+    if (video.status !== 'completed') {
+      return res.status(400).json({ message: 'Video is not ready for streaming' });
+    }
+
+    // Determine the file path in MinIO
+    let objectPath;
     
-      sub.startTime = millisecondsToTime(startTimeMs);
-      sub.endTime = millisecondsToTime(endTimeMs);
-      return sub;
-    });
-    console.log('Parsed Subtitles (After Adjustment):', subtitles);
+    if (!file) {
+      // If no specific file is requested, return the master playlist
+      console.log("using master playlist")
+      objectPath = video.hlsPath;
+    } else {
+      console.log("using specific playlist")
+      // For segment files or resolution-specific playlists
+      objectPath = `hls/${video.fileId}/${file}`;
+    }
 
-    // 4. Convert back to VTT format
-    let updatedVTT = subtitles
-      .map(sub => `${sub.startTime.replace(/,/g, '.')} --> ${sub.endTime.replace(/,/g, '.')}\n${sub.text}`)
-      .join('\n\n');
-    updatedVTT = `WEBVTT\n\n${updatedVTT}`;
-    console.log('Updated VTT Content:', updatedVTT);
+    console.log(objectPath)
+    // Get content type based on file extension
+    let contentType = 'application/octet-stream';
+    if (objectPath.endsWith('.m3u8')) {
+      contentType = 'application/vnd.apple.mpegurl';
+    } else if (objectPath.endsWith('.ts')) {
+      contentType = 'video/mp2t';
+    }
 
-    // 5. Save updated file
-    fs.writeFileSync(tempFilePath, updatedVTT, 'utf-8');
+    // Set appropriate headers
+    res.setHeader('Content-Type', contentType);
+    
+    // Check if file exists
+    try {
+      await minioClient.statObject(bucketName, objectPath);
+    } catch (err) {
+      return res.status(404).json({ message: 'File not found' });
+    }
 
-    // 6. Upload back to MinIO
-    await minioClient.fPutObject(bucketName, subtitlePath, tempFilePath, { 'Content-Type': 'text/vtt' });
-
-    // Clean up temp file
-    fs.unlinkSync(tempFilePath);
-
-    return res.json({ message: 'Subtitle adjusted successfully' });
-
+    // Create a stream from MinIO
+    const stream = await minioClient.getObject(bucketName, objectPath);
+    
+    // Pipe the stream to the response
+    stream.pipe(res);
   } catch (error) {
-    console.error('Error adjusting subtitle:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    console.error('Error streaming video:', error);
+    return res.status(500).json({ message: 'Error streaming video', error: error.message });
+  }
+};
+
+// Get HLS information
+const getHlsInfo = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const video = await Video.findById(id);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+
+    if (video.status !== 'completed') {
+      return res.status(400).json({ message: 'Video is not ready for streaming' });
+    }
+
+    return res.status(200).json({
+      id: video._id,
+      masterPlaylist: `${bucketName}/${video.hlsPath}`, // `/api/videos1/${video._id}/hls`
+      formats: video.formats.map(format => ({
+        name: format.name,
+        resolution: format.resolution,
+        playlist: `${bucketName}/${format.path}`// `/api/videos1/${video._id}/hls/${format.name}/playlist.m3u8`
+      }))
+    });
+  } catch (error) {
+    console.error('Error getting HLS info:', error);
+    return res.status(500).json({ message: 'Error getting HLS info', error: error.message });
   }
 };
 
@@ -469,7 +531,8 @@ const downloadVideo = async (req, res) => {
     console.log(`Created temp directory: ${tempDir}`);
 
     // Construct the path to the resolution folder in MinIO
-    const folderPath = `${video.title}/${resolution}`;
+    // videos/hls/fileid/resolution
+    const folderPath = `hls/${video.fileId}/${resolution}`;
     
     // Create a file to list all TS files for ffmpeg concat
     const concatFilePath = path.join(tempDir, "concat.txt");
@@ -479,6 +542,7 @@ const downloadVideo = async (req, res) => {
     const tsFiles = [];
     try {
       const objectsList = minioClient.listObjectsV2(bucketName, folderPath, true);
+      console.log(objectsList)
       for await (const obj of objectsList) {
         if (obj.name && obj.name.endsWith(".ts")) {
           tsFiles.push(obj.name);
@@ -537,7 +601,7 @@ const downloadVideo = async (req, res) => {
     
     // Output file path
     const outputFilePath = path.join(tempDir, "output.mp4");
-    const sanitizedFilename = video.title.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const sanitizedFilename = video.originalName.replace(/[^a-zA-Z0-9_.-]/g, "_");
     const downloadFilename = `${sanitizedFilename}_${resolution}.mp4`;
     
     // Use fluent-ffmpeg to combine the files
@@ -605,84 +669,18 @@ const downloadVideo = async (req, res) => {
   }
 };
 
-const getVideoById = async (req, res) => {
-  try {
-    const video = await Video.findById(req.params.id);
-    if (!video) {
-      return res.status(404).json({ error: "Video not found" });
-    }
-    res.json(video);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch video" });
-  }
-};
+// Initialize controller when module is loaded
+initializeController();
 
-// Things needed here
-const streamToString = (stream) => {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    stream.on("data", (chunk) => chunks.push(chunk));
-    stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    stream.on("error", reject);
-  });
-};
-
-function manualParseSRT(srtContent) {
-  const subtitles = [];
-  const blocks = srtContent.split('\n\n'); // Split into subtitle blocks
-
-  blocks.forEach((block, index) => {
-    const lines = block.split('\n');
-    if (lines.length >= 2) {
-      const [timeRange, ...textLines] = lines;
-      const [startTime, endTime] = timeRange.split(' --> ');
-
-      subtitles.push({
-        id: index + 1,
-        startTime,
-        endTime,
-        text: textLines.join('\n'),
-      });
-    }
-  });
-
-  return subtitles;
-}
-
-function timeToMilliseconds(time) {
-  const [hms, ms] = time.split(','); // Split into hours:minutes:seconds and milliseconds
-  const timeParts = hms.split(':'); // Split hours, minutes, seconds
-
-  let hours = 0, minutes = 0, seconds = 0;
-
-  if (timeParts. length === 3) {
-    // HH:MM:SS format
-    [hours, minutes, seconds] = timeParts;
-  } else if (timeParts.length === 2) {
-    // MM:SS format
-    [minutes, seconds] = timeParts;
-  } else {
-    throw new Error(`Invalid time format: ${time}`);
-  }
-
-  return (+hours * 3600 + +minutes * 60 + +seconds) * 1000 + +ms; // Convert to milliseconds
-}
-
-function millisecondsToTime(ms) {
-  const hours = Math.floor(ms / 3600000); // 1 hour = 3600000 ms
-  const minutes = Math.floor((ms % 3600000) / 60000); // 1 minute = 60000 ms
-  const seconds = Math.floor((ms % 60000) / 1000); // 1 second = 1000 ms
-  const milliseconds = ms % 1000; // Remainder is milliseconds
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(milliseconds).padStart(3, '0')}`;
-}
+// Start the worker
+const worker = startWorker();
 
 module.exports = {
   uploadVideo,
-  getTranscodingProgress,
-  getVideos,
+  getVideoStatus,
+  getAllVideos,
   deleteVideo,
-  uploadSubtitle,
-  adjustSubtitle,
-  downloadVideo,
-  getVideoById,
+  streamHls,
+  getHlsInfo,
+  downloadVideo
 };

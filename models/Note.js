@@ -9,6 +9,12 @@ const noteSchema = new mongoose.Schema(
     },
     videoId: {
       type: mongoose.Schema.Types.ObjectId,
+      ref: "Video",
+      required: true,
+    },
+    courseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Course",
       required: true,
     },
     noteText: {
