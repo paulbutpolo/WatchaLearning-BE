@@ -2,7 +2,6 @@ const Subtitle = require('../models/Subtitle');
 const Video = require('../models/Video');
 const fs = require('fs');
 const path = require('path');
-// const { promisify } = require('util');
 const { minioClient, bucketName } = require('../config/minio');
 
 // Helper function to read M3U8 file and update it to include subtitles
@@ -69,6 +68,53 @@ async function updateManifestFile(videoId, subtitleLanguage, subtitleManifestFil
       }
     }
     
+    return true;
+  } catch (error) {
+    console.error('Error updating manifest file:', error);
+    throw error;
+  }
+}
+
+async function updateSubtitleManifestFile(directory, language) {
+  const manifestPath = directory.split('/');
+  const hls = manifestPath[0]; 
+  const fileId = manifestPath[1];
+  const subtitleFolder = manifestPath[2];
+  const vttFileName = manifestPath[3]; 
+  const manifestFileName = `subtitles_${language}.m3u8`;
+  const fullPath = `${hls}/${fileId}/${subtitleFolder}/${manifestFileName}`;
+  
+  try {
+    // Get the subtitle playlist data
+    const subtitlePlaylistData = await minioClient.getObject(bucketName, fullPath);
+    
+    // Convert the stream to string properly
+    let subtitlePlaylistContent = '';
+    for await (const chunk of subtitlePlaylistData) {
+      subtitlePlaylistContent += chunk.toString();
+    }
+    
+    // Split by proper newlines based on the original content
+    const separator = subtitlePlaylistContent.includes('\r\n') ? '\r\n' : '\n';
+    
+    // Remove the line containing the .vtt file name
+    const lines = subtitlePlaylistContent.split(separator);
+    const filteredLines = lines.filter(line => !line.includes(vttFileName));
+    const updatedContent = filteredLines.join(separator);
+    
+    // Convert string to buffer before uploading
+    const updatedBuffer = Buffer.from(updatedContent);
+    
+    // Upload the updated content back to MinIO with content type
+    await minioClient.putObject(
+      bucketName, 
+      fullPath, 
+      updatedBuffer, 
+      updatedBuffer.length,
+      'application/x-mpegURL'  // Specify the correct content type for M3U8 files
+    );
+    
+    console.log('Manifest file updated successfully.');
     return true;
   } catch (error) {
     console.error('Error updating manifest file:', error);
@@ -231,19 +277,14 @@ exports.deleteSubtitle = async (req, res) => {
       return res.status(404).json({ message: 'Associated video not found' });
     }
 
-    // Extract bucket name and object path from subtitle filePath
-    const filePathParts = subtitle.filePath.split('/');
-    const bucketName = filePathParts[0];
-    const objectName = filePathParts.slice(1).join('/');
-
     // Delete the subtitle file from MinIO
-    await minioClient.removeObject(bucketName, objectName);
+    await minioClient.removeObject(bucketName, subtitle.filePath);
 
     // Remove the subtitle entry from the manifest file
-    await updateManifestFile(subtitle.videoId, subtitle.language, null);
+    await updateSubtitleManifestFile(subtitle.filePath, subtitle.language);
 
     // Delete the subtitle record from the database
-    await subtitle.remove();
+    await subtitle.deleteOne();
 
     return res.status(200).json({ message: 'Subtitle deleted successfully' });
   } catch (error) {

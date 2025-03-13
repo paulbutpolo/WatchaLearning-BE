@@ -123,7 +123,26 @@ const createResource = async (req, res) => {
   }
 };
 
+const getResourceURL = async (req, res) => {
+  const { resourceIds } = req.body;
+
+  try {
+    // Query the Resource collection to get URLs
+    const resources = await Resource.find({ _id: { $in: resourceIds } }).select('_id url');
+    const resourceMap = resources.reduce((acc, resource) => {
+      acc[resource._id.toString()] = resource.url;
+      return acc;
+    }, {});
+
+    res.status(200).json(resourceMap);
+  } catch (error) {
+    console.error('Error fetching resource URLs:', error);
+    res.status(500).json({ error: 'Failed to fetch resource URLs' });
+  }
+}
+
 module.exports = {
   getAllResources,
-  createResource
+  createResource,
+  getResourceURL
 };

@@ -11,8 +11,8 @@ const Queue = require('bullmq').Queue;
 // Create a queue for video transcoding
 const videoQueue = new Queue('videoTranscode', {
   connection: {
-    host: 'localhost',
-    port: 6379,
+    host: process.env.REDIS_HOST,
+    port: process.env.REDIS_PORT,
   }
 });
 
@@ -287,7 +287,7 @@ const startWorker = () => {
               '-hls_list_size 0',
               '-hls_segment_filename',
               path.join(resolutionDir, 'segment_%03d.ts'),
-              '-threads 12', // Use all 12 CPU threads
+              '-threads 2', // Use all 12 CPU threads
               '-preset faster', // Use a faster preset for better performance
               '-f hls'
             ])
@@ -385,8 +385,8 @@ const startWorker = () => {
     }
   }, { 
     connection: {
-      host: 'localhost',
-      port: 6379
+      host: process.env.REDIS_HOST,
+      port: process.env.REDIS_PORT,
     },
     concurrency: 2 // Process 2 videos at a time
   });

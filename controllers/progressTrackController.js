@@ -34,8 +34,8 @@ const saveProgress = async (req, res) => {
 
 // Get progress for the current user
 const getProgress = async (req, res) => {
-  const { courseId, videoId } = req.query; // Extract courseId and videoId from query parameters
-  const { userId } = req; // Assuming userId is attached to the request (e.g., from authentication middleware)
+  const { courseId, videoId } = req.query;
+  const { userId } = req; 
   // Validate required fields
   if (!courseId || !videoId || !userId) {
     return res.status(400).json({ message: 'Missing required fields: courseId, videoId, or userId' });
@@ -49,8 +49,7 @@ const getProgress = async (req, res) => {
       // Return the progress if found
       res.status(200).json({ currentProgress: progress.currentProgress });
     } else {
-      // Return a 404 if no progress is found
-      res.status(404).json({ message: 'No progress found' });
+      res.status(200).json({ currentProgress: 0 });
     }
   } catch (error) {
     console.error('Error fetching progress:', error);

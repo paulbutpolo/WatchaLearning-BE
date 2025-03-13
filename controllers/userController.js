@@ -98,6 +98,30 @@ const createDefaultUser = async () => {
   }
 };
 
+const resetPassword = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+    
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    const user = await User.findByIdAndUpdate(
+      id,
+      { password: hashedPassword },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   createDefaultUser,
   getUsers,
@@ -105,4 +129,5 @@ module.exports = {
   getRole,
   updateUser,
   deleteUser,
+  resetPassword,
 };

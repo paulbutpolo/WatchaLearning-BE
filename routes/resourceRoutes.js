@@ -23,5 +23,6 @@ const resourceController = require('../controllers/resourceController');
 
 router.get('/resources/', resourceController.getAllResources);
 router.post('/resource/', resourceController.createResource);
+router.post('/resources/url', resourceController.getResourceURL); // this is a get tbh i made it post due to the data
 
 module.exports = router;

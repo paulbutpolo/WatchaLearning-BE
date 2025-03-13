@@ -18,4 +18,6 @@ router.put('/users/:id', authMiddleware, userController.updateUser);
 // DELETE /api/users/:id
 router.delete('/users/:id', authMiddleware, userController.deleteUser);
 
+router.post('/users/:id/reset-password', authMiddleware, userController.resetPassword);
+
 module.exports = router;

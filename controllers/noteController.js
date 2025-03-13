@@ -25,14 +25,17 @@ const getNotes = async (req, res) => {
   const { courseId, videoId } = req.params;
   const userId = req.userId;
 
-  // console.log(courseId, videoId, userId); // Debugging: Ensure these values are correct
-
   try {
     const notes = await Note.find({
       userId: userId,
       courseId: courseId,
       videoId: videoId
     });
+
+    if (!notes) {
+      return res.status(200).json({});
+    }
+
     res.status(200).json(notes);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching notes', error: error.message });
@@ -64,7 +67,6 @@ const updateNote = async (req, res) => {
 
 // Delete a note
 const deleteNote = async (req, res) => {
-  console.log(req.params)
   try {
     const { noteId } = req.params;
 
